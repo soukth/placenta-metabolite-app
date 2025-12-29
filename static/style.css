@@ -1,0 +1,42 @@
+body {
+    font-family: Arial, sans-serif;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #333;
+}
+
+.card {
+    background: white;
+    width: 420px;
+    margin: 80px auto;
+    padding: 25px;
+    border-radius: 12px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+}
+
+h2 {
+    margin-bottom: 15px;
+}
+
+input, button {
+    width: 100%;
+    margin-top: 10px;
+    padding: 10px;
+}
+
+button {
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 6px;
+}
+
+.tabs button {
+    width: 32%;
+    margin-top: 15px;
+}
+
+.note {
+    font-size: 12px;
+    margin-top: 15px;
+    color: #666;
+}

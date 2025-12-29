@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Placenta Evidence Analyzer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="card">
+    <h2>Placenta Literature Analyzer</h2>
+
+    <form action="/upload" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" required>
+        <button type="submit">Analyze</button>
+    </form>
+
+    <div class="tabs">
+        <button>Results</button>
+        <button>Evidence</button>
+        <button>Pathways</button>
+    </div>
+
+    <p class="note">
+        Sources: PubMed, Europe PMC, KEGG/Reactome inference, Google Scholar links
+    </p>
+</div>
+</body>
+</html>
