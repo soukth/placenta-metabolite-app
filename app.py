@@ -1,43 +1,79 @@
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse, HTMLResponse
-import shutil
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+import pandas as pd
+import uuid
 import os
-from analysis import analyze_excel
+import time
 
 app = FastAPI()
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-last_output = None
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# ---------------------------
+# MOCK ANALYSIS (replace with your real logic)
+# ---------------------------
+def run_analysis(df):
+    time.sleep(1)  # simulate processing
+    results = []
+
+    for gene in df.iloc[:, 0].astype(str):
+        results.append({
+            "Gene": gene,
+            "PubMed_DOI": "Not found",
+            "EuropePMC_DOI": "Not found",
+            "Evidence_Type": "None",
+            "Pathway": "Not available",
+            "Pathway_Placenta_Evidence": "Not available"
+        })
+
+    return pd.DataFrame(results)
+
+# ---------------------------
+# ROUTES
+# ---------------------------
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """
-    <h2>Placenta Metabolite Analyzer</h2>
-    <form action="/analyze" method="post" enctype="multipart/form-data">
-      <input type="file" name="file">
-      <button type="submit">Analyze</button>
-    </form>
-    <br>
-    <a href="/download">Download Excel</a>
-    """
-
+    with open("static/index.html", encoding="utf-8") as f:
+        return f.read()
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    global last_output
+    job_id = str(uuid.uuid4())
 
-    path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    df = pd.read_excel(file.file)
+    result_df = run_analysis(df)
 
-    last_output = analyze_excel(path)
-    return {"status": "Analysis complete"}
+    output_path = f"{RESULTS_DIR}/{job_id}.xlsx"
+    result_df.to_excel(output_path, index=False)
 
+    result_df.to_json(f"{RESULTS_DIR}/{job_id}.json", orient="records")
 
-@app.get("/download")
-def download():
-    if last_output:
-        return FileResponse(last_output, filename="analysis_output.xlsx")
-    return {"error": "No analysis run yet"}
+    return {"job_id": job_id}
+
+@app.get("/evidence/{job_id}")
+def get_evidence(job_id: str):
+    path = f"{RESULTS_DIR}/{job_id}.json"
+    if not os.path.exists(path):
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+
+    df = pd.read_json(path)
+    return df[["Gene", "PubMed_DOI", "EuropePMC_DOI", "Evidence_Type"]].to_dict(orient="records")
+
+@app.get("/pathways/{job_id}")
+def get_pathways(job_id: str):
+    path = f"{RESULTS_DIR}/{job_id}.json"
+    if not os.path.exists(path):
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+
+    df = pd.read_json(path)
+    return df[["Gene", "Pathway", "Pathway_Placenta_Evidence"]].to_dict(orient="records")
+
+@app.get("/download/{job_id}")
+def download(job_id: str):
+    path = f"{RESULTS_DIR}/{job_id}.xlsx"
+    if not os.path.exists(path):
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    return FileResponse(path, filename="analysis_results.xlsx")
