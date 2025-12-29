@@ -1,27 +1,120 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Placenta Evidence Analyzer</title>
-    <link rel="stylesheet" href="/static/style.css">
+<meta charset="UTF-8">
+<title>Placenta Metabolite Analyzer</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<style>
+.fade {
+  animation: fadeIn 0.4s ease-in-out;
+}
+@keyframes fadeIn {
+  from {opacity: 0; transform: translateY(5px);}
+  to {opacity: 1; transform: translateY(0);}
+}
+</style>
 </head>
-<body>
-<div class="card">
-    <h2>Placenta Literature Analyzer</h2>
 
-    <form action="/upload" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" required>
-        <button type="submit">Analyze</button>
-    </form>
+<body class="bg-gradient-to-br from-indigo-100 to-purple-100 min-h-screen p-6">
 
-    <div class="tabs">
-        <button>Results</button>
-        <button>Evidence</button>
-        <button>Pathways</button>
-    </div>
+<div class="max-w-5xl mx-auto">
 
-    <p class="note">
-        Sources: PubMed, Europe PMC, KEGG/Reactome inference, Google Scholar links
-    </p>
+  <h1 class="text-3xl font-bold text-center text-indigo-700 mb-6">
+    Placenta Metabolite Evidence Analyzer
+  </h1>
+
+  <!-- Upload Card -->
+  <div class="bg-white rounded-xl shadow-lg p-6 mb-6">
+    <input type="file" id="fileInput" class="mb-4">
+    <button onclick="analyze()" class="bg-indigo-600 text-white px-6 py-2 rounded hover:bg-indigo-700">
+      Analyze
+    </button>
+    <p id="status" class="mt-3 text-sm text-gray-600"></p>
+  </div>
+
+  <!-- Tabs -->
+  <div class="flex space-x-4 mb-4">
+    <button onclick="loadEvidence()" class="tab-btn">Evidence</button>
+    <button onclick="loadPathways()" class="tab-btn">Pathways</button>
+    <button onclick="download()" class="tab-btn bg-green-600 text-white">Download</button>
+  </div>
+
+  <!-- Results -->
+  <div id="results" class="bg-white rounded-xl shadow-lg p-6 fade"></div>
+
 </div>
+
+<script>
+let JOB_ID = null;
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.classList.add(
+    "px-4","py-2","rounded","bg-indigo-500","text-white","hover:bg-indigo-600"
+  );
+});
+
+function analyze() {
+  const file = document.getElementById("fileInput").files[0];
+  if (!file) return alert("Upload an Excel file");
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  document.getElementById("status").innerText = "Analyzing…";
+
+  fetch("/analyze", { method: "POST", body: formData })
+    .then(r => r.json())
+    .then(data => {
+      JOB_ID = data.job_id;
+      document.getElementById("status").innerText = "Analysis complete ✔";
+    });
+}
+
+function loadEvidence() {
+  if (!JOB_ID) return alert("Run analysis first");
+
+  fetch(`/evidence/${JOB_ID}`)
+    .then(r => r.json())
+    .then(data => renderTable(data));
+}
+
+function loadPathways() {
+  if (!JOB_ID) return alert("Run analysis first");
+
+  fetch(`/pathways/${JOB_ID}`)
+    .then(r => r.json())
+    .then(data => renderTable(data));
+}
+
+function download() {
+  if (!JOB_ID) return alert("Run analysis first");
+  window.location = `/download/${JOB_ID}`;
+}
+
+function renderTable(rows) {
+  if (rows.length === 0) return;
+
+  let html = "<table class='w-full border'>";
+  html += "<tr class='bg-indigo-100'>";
+  Object.keys(rows[0]).forEach(k => {
+    html += `<th class='p-2 border'>${k}</th>`;
+  });
+  html += "</tr>";
+
+  rows.forEach(r => {
+    html += "<tr>";
+    Object.values(r).forEach(v => {
+      html += `<td class='p-2 border text-sm'>${v}</td>`;
+    });
+    html += "</tr>";
+  });
+
+  html += "</table>";
+  document.getElementById("results").innerHTML = html;
+}
+</script>
+
 </body>
 </html>
