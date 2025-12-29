@@ -36,11 +36,12 @@ DEFAULT_PATHWAYS = [
 ]
 
 def europe_pmc_search(term):
-    query = f'("{term}") AND (placenta OR pregnancy OR trophoblast)'
+    clean = term.lower().replace("dl-", "").replace("-", " ")
+    query = f'({clean} OR "{clean}")'
     params = {
         "query": query,
         "format": "json",
-        "pageSize": 5
+        "pageSize": 10
     }
     try:
         r = requests.get(EUROPE_PMC_API, params=params, timeout=15)
@@ -48,16 +49,24 @@ def europe_pmc_search(term):
         return r.json().get("resultList", {}).get("result", [])
     except Exception:
         return []
+def has_placenta_context(result):
+    text = f"{result.get('title','')} {result.get('abstractText','')}".lower()
+    for k in ["placenta", "pregnancy", "trophoblast", "decidua", "gestation"]:
+        if k in text:
+            return True
+    return False
 
 def classify_evidence(term, results):
-    term_lower = term.lower()
+    clean = term.lower().replace("dl-", "").replace("-", " ")
     for r in results:
         text = f"{r.get('title','')} {r.get('abstractText','')}".lower()
-        if term_lower in text:
+        if clean in text and has_placenta_context(r):
             return "Direct"
-    if results:
-        return "Indirect"
+    for r in results:
+        if has_placenta_context(r):
+            return "Indirect"
     return "None"
+
 
 def infer_pathway(term):
     t = term.lower()
@@ -119,3 +128,4 @@ def run_analysis(input_excel, output_excel):
     result_df = analyze_all(df)
     result_df.to_excel(output_excel, index=False)
     return output_excel
+
