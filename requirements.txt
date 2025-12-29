@@ -2,5 +2,8 @@ fastapi
 uvicorn
 pandas
 requests
+beautifulsoup4
+seaborn
+matplotlib
 openpyxl
 python-multipart
