@@ -4,7 +4,7 @@ import pandas as pd
 import uuid
 import os
 import time
-
+from analysis import analyze_all
 app = FastAPI()
 
 RESULTS_DIR = "results"
@@ -43,7 +43,9 @@ async def analyze(file: UploadFile = File(...)):
     job_id = str(uuid.uuid4())
 
     df = pd.read_excel(file.file)
-    result_df = run_analysis(df)
+
+
+    result_df = analyze_all(df)
 
     output_path = f"{RESULTS_DIR}/{job_id}.xlsx"
     result_df.to_excel(output_path, index=False)
@@ -77,3 +79,4 @@ def download(job_id: str):
         return JSONResponse({"error": "File not found"}, status_code=404)
 
     return FileResponse(path, filename="analysis_results.xlsx")
+
