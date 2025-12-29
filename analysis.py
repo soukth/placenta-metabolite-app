@@ -1,139 +1,121 @@
 import requests
 import pandas as pd
-from urllib.parse import quote
+import time
+import re
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+EUROPE_PMC_API = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 
-PLACENTA_TERMS = [
-    "placenta", "placental", "trophoblast", "chorionic",
-    "pregnancy", "maternal", "fetal", "foetal"
+PLACENTA_KEYWORDS = [
+    "placenta", "pregnancy", "trophoblast", "decidua", "gestation"
 ]
 
-ORGANS = {
-    "Placenta": ["placenta", "placental"],
-    "Decidua": ["decidua"],
-    "Amniotic fluid": ["amniotic"],
-    "Fetus": ["fetal", "foetal"],
-    "Cord blood": ["cord blood", "umbilical"]
+PATHWAY_MAP = {
+    "arginine": ("Amino Acid Metabolism", "Urea cycle / Nitric oxide synthesis"),
+    "tryptophan": ("Amino Acid Metabolism", "Kynurenine pathway"),
+    "glutamine": ("Amino Acid Metabolism", "Nitrogen metabolism"),
+    "glutamic": ("Amino Acid Metabolism", "Neurotransmitter precursor"),
+    "lysine": ("Amino Acid Metabolism", "Protein biosynthesis"),
+    "phenylalanine": ("Amino Acid Metabolism", "Tyrosine biosynthesis"),
+    "tyrosine": ("Amino Acid Metabolism", "Catecholamine synthesis"),
+    "lipid": ("Lipid Metabolism", "Fatty acid metabolism"),
+    "estriol": ("Hormone Biosynthesis", "Steroid hormone metabolism"),
+    "estrane": ("Hormone Biosynthesis", "Steroid biosynthesis"),
 }
 
-SPECIES = {
-    "Human": ["human", "homo sapiens"],
-    "Non-human primate": ["macaque", "rhesus", "primate"]
-}
+DEFAULT_PATHWAYS = [
+    "Immune Response Regulation",
+    "Cell Cycle Control",
+    "Apoptosis Signaling",
+    "Transcriptional Regulation",
+    "DNA Repair Mechanisms",
+    "Protein Folding and Stability",
+    "Cellular Stress Response",
+    "Neurotransmitter Signaling",
+    "Lipid Metabolism",
+    "Extracellular Matrix Organization"
+]
 
-METABOLIC_PROCESSES = {
-    "Amino Acid Metabolism": ["arginine", "glutamine", "lysine", "histidine", "phenylalanine", "tryptophan"],
-    "Steroid Hormone Biosynthesis": ["estriol", "estradiol", "estrone"],
-    "Lipid Metabolism": ["lipid", "fatty", "erucamide"],
-    "Energy Metabolism": ["glucose", "lactate", "pyruvate"]
-}
-
-
-# ---------------------------
-# Utility functions
-# ---------------------------
-
-def detect_from_text(text, dictionary, default="Not specified"):
-    text = text.lower()
-    for key, terms in dictionary.items():
-        if any(term in text for term in terms):
-            return key
-    return default
-
-
-def infer_metabolic_process(name):
-    lname = name.lower()
-    for process, terms in METABOLIC_PROCESSES.items():
-        if any(t in lname for t in terms):
-            return process
-    return "Not available"
-
-
-def infer_role(name):
-    lname = name.lower()
-    if lname.startswith("dl-") or lname.endswith("ol"):
-        return "Derivative"
-    if any(x in lname for x in ["glut", "arg", "lys", "phe", "trypt"]):
-        return "Intermediate"
-    return "Not determined"
-
-
-def scholar_link(name):
-    return f"https://scholar.google.com/scholar?q={quote(name + ' placenta pregnancy')}"
-
-
-# ---------------------------
-# Literature search
-# ---------------------------
-
-def search_europe_pmc(name):
-    url = (
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-        f"?query={quote(name + ' pregnancy placenta')}&format=json&pageSize=2"
-    )
+def europe_pmc_search(term):
+    query = f'("{term}") AND (placenta OR pregnancy OR trophoblast)'
+    params = {
+        "query": query,
+        "format": "json",
+        "pageSize": 5
+    }
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        data = r.json()
-
-        if data.get("hitCount", 0) == 0:
-            return []
-
-        return data["resultList"]["result"]
-
+        r = requests.get(EUROPE_PMC_API, params=params, timeout=15)
+        r.raise_for_status()
+        return r.json().get("resultList", {}).get("result", [])
     except Exception:
         return []
 
+def classify_evidence(term, results):
+    term_lower = term.lower()
+    for r in results:
+        text = f"{r.get('title','')} {r.get('abstractText','')}".lower()
+        if term_lower in text:
+            return "Direct"
+    if results:
+        return "Indirect"
+    return "None"
 
-# ---------------------------
-# Core analysis
-# ---------------------------
+def infer_pathway(term):
+    t = term.lower()
+    for key in PATHWAY_MAP:
+        if key in t:
+            return PATHWAY_MAP[key]
+    return ("Not available", "Not available")
 
-def analyze_metabolite(name):
-    hits = search_europe_pmc(name)
-    process = infer_metabolic_process(name)
-    role = infer_role(name)
+def pathway_placenta_evidence(pathway, results):
+    if pathway == "Not available":
+        return "Not available"
+    for r in results:
+        text = f"{r.get('title','')} {r.get('abstractText','')}".lower()
+        if pathway.lower().split()[0] in text:
+            return "Pathway reported in placenta"
+    return "Unknown"
 
-    paper_titles = []
-    organ = "Not specified"
-    species = "Not specified"
-    evidence_type = "None"
+def analyze_all(df):
+    rows = []
 
-    for hit in hits:
-        text = (hit.get("title", "") + " " + hit.get("abstractText", "")).lower()
+    for item in df.iloc[:, 0].astype(str):
+        time.sleep(0.3)  # polite rate limiting
 
-        paper_titles.append(hit.get("title", ""))
+        results = europe_pmc_search(item)
+        evidence = classify_evidence(item, results)
 
-        if any(t in text for t in PLACENTA_TERMS):
-            evidence_type = "Direct"
+        doi = "Not found"
+        title = "Not found"
+        journal = "Not found"
+        year = "Not found"
 
-        organ = detect_from_text(text, ORGANS, organ)
-        species = detect_from_text(text, SPECIES, species)
+        if results:
+            r0 = results[0]
+            doi = r0.get("doi", "Not found")
+            title = r0.get("title", "Not found")
+            journal = r0.get("journalTitle", "Not found")
+            year = r0.get("pubYear", "Not found")
 
-    if evidence_type == "None" and process != "Not available":
-        evidence_type = "Indirect"
+        pathway, process = infer_pathway(item)
+        pathway_evidence = pathway_placenta_evidence(pathway, results)
 
-    return {
-        "Metabolite": name,
-        "Metabolic_Process": process,
-        "Role": role,
-        "Paper_Title_1": paper_titles[0] if len(paper_titles) > 0 else "Not found",
-        "Paper_Title_2": paper_titles[1] if len(paper_titles) > 1 else "Not found",
-        "Pregnancy_Organ": organ,
-        "Species": species,
-        "Evidence_Type": evidence_type,
-        "Google_Scholar_Link": scholar_link(name)
-    }
+        rows.append({
+            "Metabolite": item,
+            "Metabolic_Process": process,
+            "PubMed_DOI": doi,
+            "Paper_Title": title,
+            "Journal": journal,
+            "Year": year,
+            "Evidence_Type": evidence,
+            "Pathway": pathway,
+            "Pathway_Placenta_Evidence": pathway_evidence,
+            "Google_Scholar_Link": f"https://scholar.google.com/scholar?q={item}+placenta+pregnancy"
+        })
 
+    return pd.DataFrame(rows)
 
-def analyze_excel(file_path):
-    df = pd.read_excel(file_path)
-    names = df.iloc[:, 0].dropna().tolist()
-
-    results = [analyze_metabolite(str(n)) for n in names]
-
-    out_df = pd.DataFrame(results)
-    output_path = "analysis_output.xlsx"
-    out_df.to_excel(output_path, index=False)
-
-    return output_path
+def run_analysis(input_excel, output_excel):
+    df = pd.read_excel(input_excel)
+    result_df = analyze_all(df)
+    result_df.to_excel(output_excel, index=False)
+    return output_excel
