@@ -7,3 +7,10 @@ seaborn
 matplotlib
 openpyxl
 python-multipart
+pymupdf
+easyocr
+pillow
+pytesseract
+torch
+torchvision
+
