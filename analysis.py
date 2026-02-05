@@ -1,131 +1,188 @@
-import requests
-import pandas as pd
-import time
+# analysis.py
+
+import os
 import re
+import fitz  # PyMuPDF
+import easyocr
+from PIL import Image
+import pytesseract
 
-EUROPE_PMC_API = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+# -----------------------------
+# CONFIG
+# -----------------------------
 
-PLACENTA_KEYWORDS = [
-    "placenta", "pregnancy", "trophoblast", "decidua", "gestation"
-]
+IMAGE_DIR = "extracted_images"
+GENE_PATTERN = r"\b[A-Z0-9\-]{2,10}\b"   # Adjust if needed
 
-PATHWAY_MAP = {
-    "arginine": ("Amino Acid Metabolism", "Urea cycle / Nitric oxide synthesis"),
-    "tryptophan": ("Amino Acid Metabolism", "Kynurenine pathway"),
-    "glutamine": ("Amino Acid Metabolism", "Nitrogen metabolism"),
-    "glutamic": ("Amino Acid Metabolism", "Neurotransmitter precursor"),
-    "lysine": ("Amino Acid Metabolism", "Protein biosynthesis"),
-    "phenylalanine": ("Amino Acid Metabolism", "Tyrosine biosynthesis"),
-    "tyrosine": ("Amino Acid Metabolism", "Catecholamine synthesis"),
-    "lipid": ("Lipid Metabolism", "Fatty acid metabolism"),
-    "estriol": ("Hormone Biosynthesis", "Steroid hormone metabolism"),
-    "estrane": ("Hormone Biosynthesis", "Steroid biosynthesis"),
-}
+# Initialize OCR reader once (important for speed)
+reader = easyocr.Reader(['en'], gpu=False)
 
-DEFAULT_PATHWAYS = [
-    "Immune Response Regulation",
-    "Cell Cycle Control",
-    "Apoptosis Signaling",
-    "Transcriptional Regulation",
-    "DNA Repair Mechanisms",
-    "Protein Folding and Stability",
-    "Cellular Stress Response",
-    "Neurotransmitter Signaling",
-    "Lipid Metabolism",
-    "Extracellular Matrix Organization"
-]
 
-def europe_pmc_search(term):
-    clean = term.lower().replace("dl-", "").replace("-", " ")
-    query = f'({clean} OR "{clean}")'
-    params = {
-        "query": query,
-        "format": "json",
-        "pageSize": 10
-    }
+# -----------------------------
+# 1️⃣ Extract PDF Text
+# -----------------------------
+
+def extract_pdf_text(pdf_path):
+    text_content = ""
+
+    doc = fitz.open(pdf_path)
+
+    for page in doc:
+        text_content += page.get_text()
+
+    return text_content
+
+
+# -----------------------------
+# 2️⃣ Extract Images from PDF
+# -----------------------------
+
+def extract_images_from_pdf(pdf_path, output_folder=IMAGE_DIR):
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    doc = fitz.open(pdf_path)
+    image_paths = []
+
+    for page_index in range(len(doc)):
+        page = doc[page_index]
+        images = page.get_images(full=True)
+
+        for img_index, img in enumerate(images):
+
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+
+            # Skip tiny images (icons/logos)
+            if base_image["width"] < 300:
+                continue
+
+            image_bytes = base_image["image"]
+
+            image_path = os.path.join(
+                output_folder,
+                f"page{page_index+1}_img{img_index+1}.png"
+            )
+
+            with open(image_path, "wb") as f:
+                f.write(image_bytes)
+
+            image_paths.append(image_path)
+
+    return image_paths
+
+
+# -----------------------------
+# 3️⃣ OCR Functions
+# -----------------------------
+
+def ocr_image_easyocr(image_path):
+    """
+    Primary OCR method (better for scientific figures)
+    """
     try:
-        r = requests.get(EUROPE_PMC_API, params=params, timeout=15)
-        r.raise_for_status()
-        return r.json().get("resultList", {}).get("result", [])
-    except Exception:
-        return []
-def has_placenta_context(result):
-    text = f"{result.get('title','')} {result.get('abstractText','')}".lower()
-    for k in ["placenta", "pregnancy", "trophoblast", "decidua", "gestation"]:
-        if k in text:
-            return True
-    return False
-
-def classify_evidence(term, results):
-    clean = term.lower().replace("dl-", "").replace("-", " ")
-    for r in results:
-        text = f"{r.get('title','')} {r.get('abstractText','')}".lower()
-        if clean in text and has_placenta_context(r):
-            return "Direct"
-    for r in results:
-        if has_placenta_context(r):
-            return "Indirect"
-    return "None"
+        results = reader.readtext(image_path, detail=0)
+        return " ".join(results)
+    except:
+        return ""
 
 
-def infer_pathway(term):
-    t = term.lower()
-    for key in PATHWAY_MAP:
-        if key in t:
-            return PATHWAY_MAP[key]
-    return ("Not available", "Not available")
+def ocr_image_tesseract(image_path):
+    """
+    Backup OCR (lighter)
+    """
+    try:
+        img = Image.open(image_path)
+        return pytesseract.image_to_string(img)
+    except:
+        return ""
 
-def pathway_placenta_evidence(pathway, results):
-    if pathway == "Not available":
-        return "Not available"
-    for r in results:
-        text = f"{r.get('title','')} {r.get('abstractText','')}".lower()
-        if pathway.lower().split()[0] in text:
-            return "Pathway reported in placenta"
-    return "Unknown"
 
-def analyze_all(df):
-    rows = []
+# -----------------------------
+# 4️⃣ OCR All Images
+# -----------------------------
 
-    for item in df.iloc[:, 0].astype(str):
-        time.sleep(0.3)  # polite rate limiting
+def extract_text_from_images(image_paths):
 
-        results = europe_pmc_search(item)
-        evidence = classify_evidence(item, results)
+    full_text = ""
 
-        doi = "Not found"
-        title = "Not found"
-        journal = "Not found"
-        year = "Not found"
+    for img_path in image_paths:
 
-        if results:
-            r0 = results[0]
-            doi = r0.get("doi", "Not found")
-            title = r0.get("title", "Not found")
-            journal = r0.get("journalTitle", "Not found")
-            year = r0.get("pubYear", "Not found")
+        print(f"OCR processing: {img_path}")
 
-        pathway, process = infer_pathway(item)
-        pathway_evidence = pathway_placenta_evidence(pathway, results)
+        text = ocr_image_easyocr(img_path)
 
-        rows.append({
-            "Metabolite": item,
-            "Metabolic_Process": process,
-            "PubMed_DOI": doi,
-            "Paper_Title": title,
-            "Journal": journal,
-            "Year": year,
-            "Evidence_Type": evidence,
-            "Pathway": pathway,
-            "Pathway_Placenta_Evidence": pathway_evidence,
-            "Google_Scholar_Link": f"https://scholar.google.com/scholar?q={item}+placenta+pregnancy"
-        })
+        # Fallback if EasyOCR fails
+        if len(text.strip()) == 0:
+            text = ocr_image_tesseract(img_path)
 
-    return pd.DataFrame(rows)
+        full_text += "\n" + text
 
-def run_analysis(input_excel, output_excel):
-    df = pd.read_excel(input_excel)
-    result_df = analyze_all(df)
-    result_df.to_excel(output_excel, index=False)
-    return output_excel
+    return full_text
 
+
+# -----------------------------
+# 5️⃣ Gene Extraction
+# -----------------------------
+
+def extract_genes(text):
+
+    matches = re.findall(GENE_PATTERN, text)
+
+    # Filter common false positives
+    blacklist = {
+        "FIG", "DNA", "RNA", "ATP",
+        "PDF", "SUPP", "ET", "AL"
+    }
+
+    genes = sorted(set(
+        g for g in matches
+        if g not in blacklist
+        and not g.isdigit()
+    ))
+
+    return genes
+
+
+# -----------------------------
+# 6️⃣ Full Pipeline
+# -----------------------------
+
+def analyze_pdf(pdf_path):
+
+    print("Step 1: Extracting PDF text...")
+    pdf_text = extract_pdf_text(pdf_path)
+
+    print("Step 2: Extracting images...")
+    image_paths = extract_images_from_pdf(pdf_path)
+
+    print(f"Found {len(image_paths)} images")
+
+    print("Step 3: Running OCR...")
+    image_text = extract_text_from_images(image_paths)
+
+    print("Step 4: Merging text...")
+    full_text = pdf_text + "\n" + image_text
+
+    print("Step 5: Extracting genes...")
+    genes = extract_genes(full_text)
+
+    return {
+        "total_genes": len(genes),
+        "genes": genes
+    }
+
+
+# -----------------------------
+# CLI TEST (Optional)
+# -----------------------------
+
+if __name__ == "__main__":
+
+    pdf_file = "sample.pdf"  # Replace with your file
+
+    results = analyze_pdf(pdf_file)
+
+    print("\n===== RESULTS =====")
+    print(f"Total genes found: {results['total_genes']}")
+    print(results["genes"])
