@@ -1,30 +1,36 @@
-# analysis.py
-
 import os
 import re
 import fitz  # PyMuPDF
 import easyocr
+import pandas as pd
 from PIL import Image
 import pytesseract
 
-# -----------------------------
+# ----------------------------------
 # CONFIG
-# -----------------------------
+# ----------------------------------
 
 IMAGE_DIR = "extracted_images"
-GENE_PATTERN = r"\b[A-Z0-9\-]{2,10}\b"   # Adjust if needed
+OUTPUT_EXCEL = "analysis_results.xlsx"
 
-# Initialize OCR reader once (important for speed)
+GENE_PATTERN = r"\b[A-Z0-9\-]{2,10}\b"
+
+BLACKLIST = {
+    "FIG", "DNA", "RNA", "ATP",
+    "PDF", "SUPP", "ET", "AL"
+}
+
+# Initialize OCR reader
 reader = easyocr.Reader(['en'], gpu=False)
 
 
-# -----------------------------
+# ----------------------------------
 # 1️⃣ Extract PDF Text
-# -----------------------------
+# ----------------------------------
 
 def extract_pdf_text(pdf_path):
-    text_content = ""
 
+    text_content = ""
     doc = fitz.open(pdf_path)
 
     for page in doc:
@@ -33,13 +39,13 @@ def extract_pdf_text(pdf_path):
     return text_content
 
 
-# -----------------------------
-# 2️⃣ Extract Images from PDF
-# -----------------------------
+# ----------------------------------
+# 2️⃣ Extract Images
+# ----------------------------------
 
-def extract_images_from_pdf(pdf_path, output_folder=IMAGE_DIR):
+def extract_images_from_pdf(pdf_path):
 
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(IMAGE_DIR, exist_ok=True)
 
     doc = fitz.open(pdf_path)
     image_paths = []
@@ -53,14 +59,13 @@ def extract_images_from_pdf(pdf_path, output_folder=IMAGE_DIR):
             xref = img[0]
             base_image = doc.extract_image(xref)
 
-            # Skip tiny images (icons/logos)
             if base_image["width"] < 300:
                 continue
 
             image_bytes = base_image["image"]
 
             image_path = os.path.join(
-                output_folder,
+                IMAGE_DIR,
                 f"page{page_index+1}_img{img_index+1}.png"
             )
 
@@ -72,81 +77,106 @@ def extract_images_from_pdf(pdf_path, output_folder=IMAGE_DIR):
     return image_paths
 
 
-# -----------------------------
-# 3️⃣ OCR Functions
-# -----------------------------
+# ----------------------------------
+# 3️⃣ OCR Images
+# ----------------------------------
 
-def ocr_image_easyocr(image_path):
-    """
-    Primary OCR method (better for scientific figures)
-    """
-    try:
-        results = reader.readtext(image_path, detail=0)
-        return " ".join(results)
-    except:
-        return ""
-
-
-def ocr_image_tesseract(image_path):
-    """
-    Backup OCR (lighter)
-    """
-    try:
-        img = Image.open(image_path)
-        return pytesseract.image_to_string(img)
-    except:
-        return ""
-
-
-# -----------------------------
-# 4️⃣ OCR All Images
-# -----------------------------
-
-def extract_text_from_images(image_paths):
+def ocr_images(image_paths):
 
     full_text = ""
 
-    for img_path in image_paths:
+    for img in image_paths:
 
-        print(f"OCR processing: {img_path}")
+        print(f"OCR processing: {img}")
 
-        text = ocr_image_easyocr(img_path)
+        try:
+            result = reader.readtext(img, detail=0)
+            text = " ".join(result)
 
-        # Fallback if EasyOCR fails
-        if len(text.strip()) == 0:
-            text = ocr_image_tesseract(img_path)
+            if len(text.strip()) == 0:
+                text = pytesseract.image_to_string(Image.open(img))
+
+        except:
+            text = ""
 
         full_text += "\n" + text
 
     return full_text
 
 
-# -----------------------------
-# 5️⃣ Gene Extraction
-# -----------------------------
+# ----------------------------------
+# 4️⃣ Gene Extraction + Frequency
+# ----------------------------------
 
-def extract_genes(text):
+def extract_gene_frequency(text):
 
     matches = re.findall(GENE_PATTERN, text)
 
-    # Filter common false positives
-    blacklist = {
-        "FIG", "DNA", "RNA", "ATP",
-        "PDF", "SUPP", "ET", "AL"
-    }
-
-    genes = sorted(set(
+    genes = [
         g for g in matches
-        if g not in blacklist
+        if g not in BLACKLIST
         and not g.isdigit()
-    ))
+    ]
 
-    return genes
+    freq_dict = {}
+
+    for g in genes:
+        freq_dict[g] = freq_dict.get(g, 0) + 1
+
+    return freq_dict
 
 
-# -----------------------------
-# 6️⃣ Full Pipeline
-# -----------------------------
+# ----------------------------------
+# 5️⃣ Figure Gene Tagging
+# ----------------------------------
+
+def tag_figure_genes(pdf_freq, image_freq):
+
+    all_genes = set(pdf_freq.keys()) | set(image_freq.keys())
+
+    records = []
+
+    for gene in all_genes:
+
+        pdf_count = pdf_freq.get(gene, 0)
+        img_count = image_freq.get(gene, 0)
+
+        total = pdf_count + img_count
+
+        found_in_fig = "Yes" if img_count > 0 else "No"
+
+        records.append({
+            "Gene": gene,
+            "Frequency": total,
+            "Found_In_Figures": found_in_fig
+        })
+
+    return records
+
+
+# ----------------------------------
+# 6️⃣ Dummy Evidence + Pathway
+# (You already had APIs — keeping placeholder)
+# ----------------------------------
+
+def add_external_annotations(df):
+
+    df["PubMed_DOI"] = "Not found"
+    df["EuropePMC_DOI"] = "Not found"
+
+    df["Scholar_Link"] = df["Gene"].apply(
+        lambda g: f"https://scholar.google.com/scholar?q={g}"
+    )
+
+    # Pathway placeholder logic
+    df["Pathway"] = "Not available"
+
+    return df
+
+
+# ----------------------------------
+# 7️⃣ Full Pipeline
+# ----------------------------------
 
 def analyze_pdf(pdf_path):
 
@@ -156,33 +186,42 @@ def analyze_pdf(pdf_path):
     print("Step 2: Extracting images...")
     image_paths = extract_images_from_pdf(pdf_path)
 
-    print(f"Found {len(image_paths)} images")
+    print(f"Images found: {len(image_paths)}")
 
-    print("Step 3: Running OCR...")
-    image_text = extract_text_from_images(image_paths)
+    print("Step 3: OCR processing...")
+    image_text = ocr_images(image_paths)
 
-    print("Step 4: Merging text...")
-    full_text = pdf_text + "\n" + image_text
+    print("Step 4: Gene frequency (PDF)...")
+    pdf_freq = extract_gene_frequency(pdf_text)
 
-    print("Step 5: Extracting genes...")
-    genes = extract_genes(full_text)
+    print("Step 5: Gene frequency (Images)...")
+    image_freq = extract_gene_frequency(image_text)
 
-    return {
-        "total_genes": len(genes),
-        "genes": genes
-    }
+    print("Step 6: Tagging figure genes...")
+    records = tag_figure_genes(pdf_freq, image_freq)
+
+    df = pd.DataFrame(records)
+
+    print("Step 7: Adding annotations...")
+    df = add_external_annotations(df)
+
+    print("Step 8: Sorting...")
+    df = df.sort_values(by="Frequency", ascending=False)
+
+    print("Step 9: Saving Excel...")
+    df.to_excel(OUTPUT_EXCEL, index=False)
+
+    print(f"\n✅ Done — saved to {OUTPUT_EXCEL}")
+
+    return df
 
 
-# -----------------------------
-# CLI TEST (Optional)
-# -----------------------------
+# ----------------------------------
+# CLI TEST
+# ----------------------------------
 
 if __name__ == "__main__":
 
-    pdf_file = "sample.pdf"  # Replace with your file
+    pdf_file = "sample.pdf"  # Replace
 
-    results = analyze_pdf(pdf_file)
-
-    print("\n===== RESULTS =====")
-    print(f"Total genes found: {results['total_genes']}")
-    print(results["genes"])
+    analyze_pdf(pdf_file)
