@@ -1,227 +1,245 @@
+# ==============================
+# Placenta Literature Analyzer
+# Deploy‑Safe Full Analysis Code
+# ==============================
+
 import os
 import re
-import fitz  # PyMuPDF
-import easyocr
+import requests
 import pandas as pd
-from PIL import Image
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# PDF + OCR
+import fitz  # PyMuPDF
 import pytesseract
+from PIL import Image
+import cv2
+from pdf2image import convert_from_path
 
-# ----------------------------------
+# ==============================
 # CONFIG
-# ----------------------------------
+# ==============================
 
-IMAGE_DIR = "extracted_images"
-OUTPUT_EXCEL = "analysis_results.xlsx"
+MAX_THREADS = 6
+OUTPUT_FILE = "analysis_results.xlsx"
 
-GENE_PATTERN = r"\b[A-Z0-9\-]{2,10}\b"
+PLACENTA_KEYWORDS = [
+    "placenta",
+    "placental",
+    "trophoblast",
+    "chorionic",
+    "fetal maternal interface"
+]
 
-BLACKLIST = {
-    "FIG", "DNA", "RNA", "ATP",
-    "PDF", "SUPP", "ET", "AL"
-}
+PATHWAY_GROUPS = [
+    "Immune Response Regulation",
+    "Cell Cycle Control",
+    "Apoptosis Signaling",
+    "Transcriptional Regulation",
+    "DNA Repair Mechanisms",
+    "Protein Folding and Stability",
+    "Cellular Stress Response",
+    "Neurotransmitter Signaling",
+    "Lipid Metabolism",
+    "Extracellular Matrix Organization"
+]
 
-# Initialize OCR reader
-reader = easyocr.Reader(['en'], gpu=False)
+# ==============================
+# UTILITIES
+# ==============================
+
+def contains_placenta_context(text):
+    text = text.lower()
+    return any(k in text for k in PLACENTA_KEYWORDS)
 
 
-# ----------------------------------
-# 1️⃣ Extract PDF Text
-# ----------------------------------
+# ==============================
+# PUBMED SEARCH
+# ==============================
 
-def extract_pdf_text(pdf_path):
+def search_pubmed(entity):
+    try:
+        url = f"https://pubmed.ncbi.nlm.nih.gov/?term={entity}+placenta+human"
+        r = requests.get(url, timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
 
+        article = soup.find("a", class_="docsum-title")
+        if not article:
+            return "Not found", "Not found"
+
+        link = "https://pubmed.ncbi.nlm.nih.gov" + article.get("href")
+
+        # Open article page
+        r2 = requests.get(link, timeout=15)
+        soup2 = BeautifulSoup(r2.text, "html.parser")
+
+        doi_tag = soup2.find("span", class_="citation-doi")
+        doi = doi_tag.text.replace("doi: ", "") if doi_tag else "Not found"
+
+        return doi, link
+
+    except Exception:
+        return "Not found", "Not found"
+
+
+# ==============================
+# EUROPE PMC SEARCH
+# ==============================
+
+def search_europe_pmc(entity):
+    try:
+        url = (
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+            f"?query={entity}+placenta+human&format=json&pageSize=1"
+        )
+
+        r = requests.get(url, timeout=15)
+        data = r.json()
+
+        if "resultList" not in data or not data["resultList"]["result"]:
+            return "Not found"
+
+        doi = data["resultList"]["result"][0].get("doi", "Not found")
+        return doi
+
+    except Exception:
+        return "Not found"
+
+
+# ==============================
+# GOOGLE SCHOLAR LINK
+# ==============================
+
+def scholar_link(entity):
+    query = entity.replace(" ", "+")
+    return f"https://scholar.google.com/scholar?q={query}+placenta+human"
+
+
+# ==============================
+# PATHWAY INFERENCE (Keyword Logic)
+# ==============================
+
+def infer_pathway(entity):
+    e = entity.lower()
+
+    if any(x in e for x in ["lipid", "fatty", "cholesterol"]):
+        return "Lipid Metabolism"
+
+    if any(x in e for x in ["neuro", "dopamine", "serotonin"]):
+        return "Neurotransmitter Signaling"
+
+    if any(x in e for x in ["collagen", "matrix", "integrin"]):
+        return "Extracellular Matrix Organization"
+
+    if any(x in e for x in ["dna", "repair", "p53"]):
+        return "DNA Repair Mechanisms"
+
+    if any(x in e for x in ["apoptosis", "caspase"]):
+        return "Apoptosis Signaling"
+
+    if any(x in e for x in ["immune", "interleukin", "tnf"]):
+        return "Immune Response Regulation"
+
+    return "Not available"
+
+
+# ==============================
+# PDF OCR EXTRACTION
+# ==============================
+
+def extract_text_from_pdf(pdf_path):
     text_content = ""
-    doc = fitz.open(pdf_path)
 
-    for page in doc:
-        text_content += page.get_text()
+    try:
+        doc = fitz.open(pdf_path)
+
+        for page in doc:
+            text_content += page.get_text()
+
+        # Convert pages to images for OCR
+        images = convert_from_path(pdf_path)
+
+        for img in images:
+            img_np = cv2.cvtColor(
+                cv2.imread(img.filename), cv2.COLOR_BGR2GRAY
+            )
+            text_content += pytesseract.image_to_string(img_np)
+
+    except Exception:
+        pass
 
     return text_content
 
 
-# ----------------------------------
-# 2️⃣ Extract Images
-# ----------------------------------
+# ==============================
+# CORE ANALYSIS
+# ==============================
 
-def extract_images_from_pdf(pdf_path):
+def analyze_entity(entity):
+    pubmed_doi, pubmed_link = search_pubmed(entity)
+    europe_doi = search_europe_pmc(entity)
+    pathway = infer_pathway(entity)
+    scholar = scholar_link(entity)
 
-    os.makedirs(IMAGE_DIR, exist_ok=True)
+    return {
+        "Entity": entity,
+        "PubMed_DOI": pubmed_doi,
+        "EuropePMC_DOI": europe_doi,
+        "Scholar_Link": scholar,
+        "Pathway": pathway,
+    }
 
-    doc = fitz.open(pdf_path)
-    image_paths = []
 
-    for page_index in range(len(doc)):
-        page = doc[page_index]
-        images = page.get_images(full=True)
+# ==============================
+# PARALLEL ANALYSIS
+# ==============================
 
-        for img_index, img in enumerate(images):
+def analyze_all(entities):
+    results = []
 
-            xref = img[0]
-            base_image = doc.extract_image(xref)
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        futures = {executor.submit(analyze_entity, e): e for e in entities}
 
-            if base_image["width"] < 300:
-                continue
+        for future in as_completed(futures):
+            results.append(future.result())
+            print(f"Processed: {futures[future]}")
 
-            image_bytes = base_image["image"]
+    return results
 
-            image_path = os.path.join(
-                IMAGE_DIR,
-                f"page{page_index+1}_img{img_index+1}.png"
-            )
 
-            with open(image_path, "wb") as f:
-                f.write(image_bytes)
+# ==============================
+# EXCEL EXPORT
+# ==============================
 
-            image_paths.append(image_path)
+def save_results(results):
+    df = pd.DataFrame(results)
+    df.to_excel(OUTPUT_FILE, index=False)
+    print(f"\nSaved → {OUTPUT_FILE}")
 
-    return image_paths
 
+# ==============================
+# MAIN EXECUTION
+# ==============================
 
-# ----------------------------------
-# 3️⃣ OCR Images
-# ----------------------------------
+def run_analysis(excel_file, column_name="Gene"):
+    df = pd.read_excel(excel_file)
 
-def ocr_images(image_paths):
+    if column_name not in df.columns:
+        raise Exception(f"Column '{column_name}' not found")
 
-    full_text = ""
+    entities = df[column_name].dropna().tolist()
 
-    for img in image_paths:
+    print(f"Analyzing {len(entities)} entities…\n")
 
-        print(f"OCR processing: {img}")
+    results = analyze_all(entities)
+    save_results(results)
 
-        try:
-            result = reader.readtext(img, detail=0)
-            text = " ".join(result)
 
-            if len(text.strip()) == 0:
-                text = pytesseract.image_to_string(Image.open(img))
-
-        except:
-            text = ""
-
-        full_text += "\n" + text
-
-    return full_text
-
-
-# ----------------------------------
-# 4️⃣ Gene Extraction + Frequency
-# ----------------------------------
-
-def extract_gene_frequency(text):
-
-    matches = re.findall(GENE_PATTERN, text)
-
-    genes = [
-        g for g in matches
-        if g not in BLACKLIST
-        and not g.isdigit()
-    ]
-
-    freq_dict = {}
-
-    for g in genes:
-        freq_dict[g] = freq_dict.get(g, 0) + 1
-
-    return freq_dict
-
-
-# ----------------------------------
-# 5️⃣ Figure Gene Tagging
-# ----------------------------------
-
-def tag_figure_genes(pdf_freq, image_freq):
-
-    all_genes = set(pdf_freq.keys()) | set(image_freq.keys())
-
-    records = []
-
-    for gene in all_genes:
-
-        pdf_count = pdf_freq.get(gene, 0)
-        img_count = image_freq.get(gene, 0)
-
-        total = pdf_count + img_count
-
-        found_in_fig = "Yes" if img_count > 0 else "No"
-
-        records.append({
-            "Gene": gene,
-            "Frequency": total,
-            "Found_In_Figures": found_in_fig
-        })
-
-    return records
-
-
-# ----------------------------------
-# 6️⃣ Dummy Evidence + Pathway
-# (You already had APIs — keeping placeholder)
-# ----------------------------------
-
-def add_external_annotations(df):
-
-    df["PubMed_DOI"] = "Not found"
-    df["EuropePMC_DOI"] = "Not found"
-
-    df["Scholar_Link"] = df["Gene"].apply(
-        lambda g: f"https://scholar.google.com/scholar?q={g}"
-    )
-
-    # Pathway placeholder logic
-    df["Pathway"] = "Not available"
-
-    return df
-
-
-# ----------------------------------
-# 7️⃣ Full Pipeline
-# ----------------------------------
-
-def analyze_pdf(pdf_path):
-
-    print("Step 1: Extracting PDF text...")
-    pdf_text = extract_pdf_text(pdf_path)
-
-    print("Step 2: Extracting images...")
-    image_paths = extract_images_from_pdf(pdf_path)
-
-    print(f"Images found: {len(image_paths)}")
-
-    print("Step 3: OCR processing...")
-    image_text = ocr_images(image_paths)
-
-    print("Step 4: Gene frequency (PDF)...")
-    pdf_freq = extract_gene_frequency(pdf_text)
-
-    print("Step 5: Gene frequency (Images)...")
-    image_freq = extract_gene_frequency(image_text)
-
-    print("Step 6: Tagging figure genes...")
-    records = tag_figure_genes(pdf_freq, image_freq)
-
-    df = pd.DataFrame(records)
-
-    print("Step 7: Adding annotations...")
-    df = add_external_annotations(df)
-
-    print("Step 8: Sorting...")
-    df = df.sort_values(by="Frequency", ascending=False)
-
-    print("Step 9: Saving Excel...")
-    df.to_excel(OUTPUT_EXCEL, index=False)
-
-    print(f"\n✅ Done — saved to {OUTPUT_EXCEL}")
-
-    return df
-
-
-# ----------------------------------
-# CLI TEST
-# ----------------------------------
+# ==============================
+# CLI ENTRY
+# ==============================
 
 if __name__ == "__main__":
-
-    pdf_file = "sample.pdf"  # Replace
-
-    analyze_pdf(pdf_file)
+    # Example usage
+    run_analysis("input.xlsx", column_name="Gene")
