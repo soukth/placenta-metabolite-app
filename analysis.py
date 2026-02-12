@@ -1,245 +1,173 @@
-# ==============================
-# Placenta Literature Analyzer
-# Deploy‑Safe Full Analysis Code
-# ==============================
-
 import os
-import re
-import requests
-import pandas as pd
-from bs4 import BeautifulSoup
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# PDF + OCR
 import fitz  # PyMuPDF
 import pytesseract
 from PIL import Image
-import cv2
-from pdf2image import convert_from_path
+import io
+import pandas as pd
+from concurrent.futures import ProcessPoolExecutor
 
 # ==============================
-# CONFIG
+# CONFIG — TUNE PERFORMANCE HERE
 # ==============================
 
-MAX_THREADS = 6
+USE_OCR = True              # Toggle OCR ON/OFF
+MAX_IMAGES_PER_PDF = 5     # Limit OCR images
+MIN_IMAGE_SIZE = 300       # Skip tiny figures
+DOWNSCALE_FACTOR = 2       # Reduce OCR resolution
+
 OUTPUT_FILE = "analysis_results.xlsx"
 
-PLACENTA_KEYWORDS = [
-    "placenta",
-    "placental",
-    "trophoblast",
-    "chorionic",
-    "fetal maternal interface"
-]
-
-PATHWAY_GROUPS = [
-    "Immune Response Regulation",
-    "Cell Cycle Control",
-    "Apoptosis Signaling",
-    "Transcriptional Regulation",
-    "DNA Repair Mechanisms",
-    "Protein Folding and Stability",
-    "Cellular Stress Response",
-    "Neurotransmitter Signaling",
-    "Lipid Metabolism",
-    "Extracellular Matrix Organization"
-]
 
 # ==============================
-# UTILITIES
-# ==============================
-
-def contains_placenta_context(text):
-    text = text.lower()
-    return any(k in text for k in PLACENTA_KEYWORDS)
-
-
-# ==============================
-# PUBMED SEARCH
-# ==============================
-
-def search_pubmed(entity):
-    try:
-        url = f"https://pubmed.ncbi.nlm.nih.gov/?term={entity}+placenta+human"
-        r = requests.get(url, timeout=15)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        article = soup.find("a", class_="docsum-title")
-        if not article:
-            return "Not found", "Not found"
-
-        link = "https://pubmed.ncbi.nlm.nih.gov" + article.get("href")
-
-        # Open article page
-        r2 = requests.get(link, timeout=15)
-        soup2 = BeautifulSoup(r2.text, "html.parser")
-
-        doi_tag = soup2.find("span", class_="citation-doi")
-        doi = doi_tag.text.replace("doi: ", "") if doi_tag else "Not found"
-
-        return doi, link
-
-    except Exception:
-        return "Not found", "Not found"
-
-
-# ==============================
-# EUROPE PMC SEARCH
-# ==============================
-
-def search_europe_pmc(entity):
-    try:
-        url = (
-            "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
-            f"?query={entity}+placenta+human&format=json&pageSize=1"
-        )
-
-        r = requests.get(url, timeout=15)
-        data = r.json()
-
-        if "resultList" not in data or not data["resultList"]["result"]:
-            return "Not found"
-
-        doi = data["resultList"]["result"][0].get("doi", "Not found")
-        return doi
-
-    except Exception:
-        return "Not found"
-
-
-# ==============================
-# GOOGLE SCHOLAR LINK
-# ==============================
-
-def scholar_link(entity):
-    query = entity.replace(" ", "+")
-    return f"https://scholar.google.com/scholar?q={query}+placenta+human"
-
-
-# ==============================
-# PATHWAY INFERENCE (Keyword Logic)
-# ==============================
-
-def infer_pathway(entity):
-    e = entity.lower()
-
-    if any(x in e for x in ["lipid", "fatty", "cholesterol"]):
-        return "Lipid Metabolism"
-
-    if any(x in e for x in ["neuro", "dopamine", "serotonin"]):
-        return "Neurotransmitter Signaling"
-
-    if any(x in e for x in ["collagen", "matrix", "integrin"]):
-        return "Extracellular Matrix Organization"
-
-    if any(x in e for x in ["dna", "repair", "p53"]):
-        return "DNA Repair Mechanisms"
-
-    if any(x in e for x in ["apoptosis", "caspase"]):
-        return "Apoptosis Signaling"
-
-    if any(x in e for x in ["immune", "interleukin", "tnf"]):
-        return "Immune Response Regulation"
-
-    return "Not available"
-
-
-# ==============================
-# PDF OCR EXTRACTION
+# TEXT EXTRACTION
 # ==============================
 
 def extract_text_from_pdf(pdf_path):
-    text_content = ""
+    print(f"[TEXT] Opening: {pdf_path}")
 
-    try:
-        doc = fitz.open(pdf_path)
+    doc = fitz.open(pdf_path)
+    full_text = ""
 
-        for page in doc:
-            text_content += page.get_text()
+    for page_num, page in enumerate(doc):
+        print(f"[TEXT] Page {page_num + 1}")
+        full_text += page.get_text()
 
-        # Convert pages to images for OCR
-        images = convert_from_path(pdf_path)
+    return full_text
 
-        for img in images:
-            img_np = cv2.cvtColor(
-                cv2.imread(img.filename), cv2.COLOR_BGR2GRAY
+
+# ==============================
+# IMAGE + OCR EXTRACTION
+# ==============================
+
+def extract_ocr_from_pdf(pdf_path):
+    if not USE_OCR:
+        print("[OCR] Skipped (disabled)")
+        return ""
+
+    print(f"[OCR] Processing images in: {pdf_path}")
+
+    doc = fitz.open(pdf_path)
+    ocr_text = ""
+    image_count = 0
+
+    for page_index in range(len(doc)):
+        page = doc[page_index]
+        image_list = page.get_images(full=True)
+
+        print(f"[OCR] Page {page_index + 1} → {len(image_list)} images found")
+
+        for img_index, img in enumerate(image_list):
+
+            if image_count >= MAX_IMAGES_PER_PDF:
+                print("[OCR] Image limit reached")
+                return ocr_text
+
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+
+            image = Image.open(io.BytesIO(image_bytes))
+
+            # Skip small images
+            if image.width < MIN_IMAGE_SIZE or image.height < MIN_IMAGE_SIZE:
+                print("[OCR] Skipping small image")
+                continue
+
+            # Downscale
+            image = image.resize(
+                (image.width // DOWNSCALE_FACTOR,
+                 image.height // DOWNSCALE_FACTOR)
             )
-            text_content += pytesseract.image_to_string(img_np)
 
-    except Exception:
-        pass
+            print(f"[OCR] Running OCR on image {image_count + 1}")
 
-    return text_content
+            text = pytesseract.image_to_string(image)
+            ocr_text += text + "\n"
+
+            image_count += 1
+
+    return ocr_text
 
 
 # ==============================
-# CORE ANALYSIS
+# GENE / METABOLITE DETECTION
 # ==============================
 
-def analyze_entity(entity):
-    pubmed_doi, pubmed_link = search_pubmed(entity)
-    europe_doi = search_europe_pmc(entity)
-    pathway = infer_pathway(entity)
-    scholar = scholar_link(entity)
+def detect_entities(text):
+
+    # Example keywords — replace with your database
+    keywords = [
+        "glucose",
+        "lactate",
+        "serine",
+        "glycine",
+        "placenta",
+        "metabolism",
+        "ATP",
+        "mitochondria"
+    ]
+
+    found = []
+
+    for word in keywords:
+        if word.lower() in text.lower():
+            found.append(word)
+
+    return found
+
+
+# ==============================
+# SINGLE PDF PIPELINE
+# ==============================
+
+def process_pdf(pdf_path):
+
+    print(f"\n=== Processing: {os.path.basename(pdf_path)} ===")
+
+    text_data = extract_text_from_pdf(pdf_path)
+    ocr_data = extract_ocr_from_pdf(pdf_path)
+
+    combined_text = text_data + "\n" + ocr_data
+
+    entities = detect_entities(combined_text)
 
     return {
-        "Entity": entity,
-        "PubMed_DOI": pubmed_doi,
-        "EuropePMC_DOI": europe_doi,
-        "Scholar_Link": scholar,
-        "Pathway": pathway,
+        "paper": os.path.basename(pdf_path),
+        "entities_found": ", ".join(entities) if entities else "Not Found"
     }
 
 
 # ==============================
-# PARALLEL ANALYSIS
+# MAIN ANALYSIS FUNCTION
 # ==============================
 
-def analyze_all(entities):
-    results = []
+def run_analysis(pdf_folder):
 
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        futures = {executor.submit(analyze_entity, e): e for e in entities}
+    pdf_files = [
+        os.path.join(pdf_folder, f)
+        for f in os.listdir(pdf_folder)
+        if f.endswith(".pdf")
+    ]
 
-        for future in as_completed(futures):
-            results.append(future.result())
-            print(f"Processed: {futures[future]}")
+    print(f"\nFound {len(pdf_files)} PDFs\n")
 
-    return results
+    # Parallel processing
+    with ProcessPoolExecutor() as executor:
+        results = list(executor.map(process_pdf, pdf_files))
 
-
-# ==============================
-# EXCEL EXPORT
-# ==============================
-
-def save_results(results):
     df = pd.DataFrame(results)
+
     df.to_excel(OUTPUT_FILE, index=False)
-    print(f"\nSaved → {OUTPUT_FILE}")
+
+    print(f"\n✅ Analysis complete → {OUTPUT_FILE}")
 
 
 # ==============================
-# MAIN EXECUTION
-# ==============================
-
-def run_analysis(excel_file, column_name="Gene"):
-    df = pd.read_excel(excel_file)
-
-    if column_name not in df.columns:
-        raise Exception(f"Column '{column_name}' not found")
-
-    entities = df[column_name].dropna().tolist()
-
-    print(f"Analyzing {len(entities)} entities…\n")
-
-    results = analyze_all(entities)
-    save_results(results)
-
-
-# ==============================
-# CLI ENTRY
+# ENTRY POINT
 # ==============================
 
 if __name__ == "__main__":
-    # Example usage
-    run_analysis("input.xlsx", column_name="Gene")
+
+    PDF_FOLDER = "pdfs"   # Folder containing uploaded papers
+
+    run_analysis(PDF_FOLDER)
