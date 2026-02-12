@@ -11,3 +11,9 @@ pytesseract
 opencv-python-headless
 pdf2image
 PyMuPDF
+pymupdf
+pytesseract
+pillow
+pandas
+openpyxl
+
