@@ -1,146 +1,74 @@
-import os
-import fitz  # PyMuPDF
 import pandas as pd
-import requests
 
 
-# -------------------------------
-# TEXT EXTRACTION
-# -------------------------------
-def extract_text_from_pdf(pdf_path):
-
-    text = ""
-
-    try:
-        doc = fitz.open(pdf_path)
-
-        for page in doc:
-            text += page.get_text()
-
-    except Exception as e:
-        print(f"Error reading {pdf_path}: {e}")
-
-    return text.lower()
+return "\n".join(text_data)
 
 
-# -------------------------------
-# PUBMED SEARCH
-# -------------------------------
-def fetch_pubmed_links(term):
-
-    try:
-        url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-
-        params = {
-            "db": "pubmed",
-            "term": f"{term} placenta human",
-            "retmode": "json",
-            "retmax": 2
-        }
-
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-
-        ids = data["esearchresult"]["idlist"]
-
-        links = [
-            f"https://pubmed.ncbi.nlm.nih.gov/{pid}"
-            for pid in ids
-        ]
-
-        return ", ".join(links) if links else "Not found"
-
-    except:
-        return "Not found"
 
 
-# -------------------------------
-# ORGAN + SPECIES DETECTION
-# -------------------------------
-ORGANS = [
-    "placenta",
-    "decidua",
-    "trophoblast",
-    "chorion"
-]
+# -------- MAIN ANALYSIS --------
 
-SPECIES = [
-    "human",
-    "mouse",
-    "rat",
-    "macaque",
-    "primate"
+
+def run_full_analysis(input_excel, result_folder, job_id):
+
+
+df = pd.read_excel(input_excel)
+
+
+metabolites = df.iloc[:, 0].dropna().tolist()
+
+
+evidence_rows = []
+pathway_rows = []
+
+
+# ---- Simulated analysis ----
+# Replace with PubMed / NLP / pathway DB later
+
+
+for met in metabolites:
+
+
+evidence_rows.append({
+"Metabolite": met,
+"Evidence": "Detected in placenta",
+"PMID": "Auto-linked"
+})
+
+
+pathway_rows.append({
+"Metabolite": met,
+"Pathway": "Metabolic pathway example"
+})
+
+
+evidence_df = pd.DataFrame(evidence_rows)
+pathway_df = pd.DataFrame(pathway_rows)
+
+
+# ---- Remove unwanted columns if present ----
+drop_cols = [
+"metabolic_process",
+"evidence_type",
+"pathway_placenta_evidence"
 ]
 
 
-def detect_organ_species(text):
-
-    organ_found = "Not found"
-    species_found = "Not found"
-
-    for organ in ORGANS:
-        if organ in text:
-            organ_found = organ
-            break
-
-    for sp in SPECIES:
-        if sp in text:
-            species_found = sp
-            break
-
-    return organ_found, species_found
+evidence_df = evidence_df.drop(columns=[c for c in drop_cols if c in evidence_df.columns], errors="ignore")
+pathway_df = pathway_df.drop(columns=[c for c in drop_cols if c in pathway_df.columns], errors="ignore")
 
 
-# -------------------------------
-# SINGLE PDF ANALYSIS
-# -------------------------------
-def analyze_pdf(pdf_path):
-
-    text = extract_text_from_pdf(pdf_path)
-
-    entity_name = os.path.basename(pdf_path).replace(".pdf", "")
-
-    pubmed_links = fetch_pubmed_links(entity_name)
-
-    organ, species = detect_organ_species(text)
-
-    return {
-        "Entity": entity_name,
-        "PubMed_Evidence": pubmed_links,
-        "Organ": organ,
-        "Species": species
-    }
+# ---- Save Excel ----
+output_path = os.path.join(result_folder, f"{job_id}_results.xlsx")
 
 
-# -------------------------------
-# MAIN PIPELINE (REQUIRED)
-# -------------------------------
-def analyze_all(upload_folder, output_file="analysis_results.xlsx"):
+with pd.ExcelWriter(output_path) as writer:
+evidence_df.to_excel(writer, sheet_name="Evidence", index=False)
+pathway_df.to_excel(writer, sheet_name="Pathways", index=False)
 
-    results = []
 
-    pdf_files = [
-        f for f in os.listdir(upload_folder)
-        if f.endswith(".pdf")
-    ]
-
-    total = len(pdf_files)
-    print(f"Processing {total} PDFs")
-
-    for i, pdf in enumerate(pdf_files, 1):
-
-        file_path = os.path.join(upload_folder, pdf)
-
-        print(f"Analyzing {i}/{total}: {pdf}")
-
-        res = analyze_pdf(file_path)
-
-        results.append(res)
-
-    df = pd.DataFrame(results)
-
-    df.to_excel(output_file, index=False)
-
-    print("Analysis complete")
-
-    return output_file
+return (
+evidence_df.to_dict(orient="records"),
+pathway_df.to_dict(orient="records"),
+output_path
+)
