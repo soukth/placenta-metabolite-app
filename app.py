@@ -1,82 +1,49 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
-import pandas as pd
-import uuid
 import os
-import time
-from analysis import analyze_all
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import FileResponse
+import shutil
+
+from analysis import analyze_all   # ← This now exists
+
+
 app = FastAPI()
 
-RESULTS_DIR = "results"
-os.makedirs(RESULTS_DIR, exist_ok=True)
+UPLOAD_FOLDER = "uploads"
+OUTPUT_FILE = "analysis_results.xlsx"
 
-# ---------------------------
-# MOCK ANALYSIS (replace with your real logic)
-# ---------------------------
-def run_analysis(df):
-    time.sleep(1)  # simulate processing
-    results = []
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-    for gene in df.iloc[:, 0].astype(str):
-        results.append({
-            "Gene": gene,
-            "PubMed_DOI": "Not found",
-            "EuropePMC_DOI": "Not found",
-            "Evidence_Type": "None",
-            "Pathway": "Not available",
-            "Pathway_Placenta_Evidence": "Not available"
-        })
 
-    return pd.DataFrame(results)
-
-# ---------------------------
-# ROUTES
-# ---------------------------
-
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def home():
-    with open("static/index.html", encoding="utf-8") as f:
-        return f.read()
-
-@app.post("/analyze")
-async def analyze(file: UploadFile = File(...)):
-    job_id = str(uuid.uuid4())
-
-    df = pd.read_excel(file.file)
+    return {"message": "Placenta Literature Analyzer Running"}
 
 
-    result_df = analyze_all(df)
+# -------------------------------
+# FILE UPLOAD
+# -------------------------------
+@app.post("/upload/")
+async def upload_files(files: list[UploadFile] = File(...)):
 
-    output_path = f"{RESULTS_DIR}/{job_id}.xlsx"
-    result_df.to_excel(output_path, index=False)
+    for file in files:
 
-    result_df.to_json(f"{RESULTS_DIR}/{job_id}.json", orient="records")
+        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
 
-    return {"job_id": job_id}
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-@app.get("/evidence/{job_id}")
-def get_evidence(job_id: str):
-    path = f"{RESULTS_DIR}/{job_id}.json"
-    if not os.path.exists(path):
-        return JSONResponse({"error": "Job not found"}, status_code=404)
+    return {"message": "Files uploaded successfully"}
 
-    df = pd.read_json(path)
-    return df[["Gene", "PubMed_DOI", "EuropePMC_DOI", "Evidence_Type"]].to_dict(orient="records")
 
-@app.get("/pathways/{job_id}")
-def get_pathways(job_id: str):
-    path = f"{RESULTS_DIR}/{job_id}.json"
-    if not os.path.exists(path):
-        return JSONResponse({"error": "Job not found"}, status_code=404)
+# -------------------------------
+# RUN ANALYSIS
+# -------------------------------
+@app.get("/analyze/")
+def run_analysis():
 
-    df = pd.read_json(path)
-    return df[["Gene", "Pathway", "Pathway_Placenta_Evidence"]].to_dict(orient="records")
+    output_path = analyze_all(UPLOAD_FOLDER, OUTPUT_FILE)
 
-@app.get("/download/{job_id}")
-def download(job_id: str):
-    path = f"{RESULTS_DIR}/{job_id}.xlsx"
-    if not os.path.exists(path):
-        return JSONResponse({"error": "File not found"}, status_code=404)
-
-    return FileResponse(path, filename="analysis_results.xlsx")
-
+    return FileResponse(
+        output_path,
+        filename="analysis_results.xlsx"
+    )
