@@ -1,7 +1,6 @@
-fastapi
-uvicorn
+flask
 pandas
-requests
-pymupdf
 openpyxl
-python-multipart
+pymupdf
+pytesseract
+pillow
